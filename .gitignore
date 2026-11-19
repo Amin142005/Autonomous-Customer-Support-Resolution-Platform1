@@ -45,3 +45,6 @@ data/
 
 # Implementation documentation (local review notes, not for end users)
 implementation_notes/
+
+# Phase documentation (local review only)
+project-documentation/

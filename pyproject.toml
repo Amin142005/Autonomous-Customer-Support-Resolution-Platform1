@@ -10,3 +10,24 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.6",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "flake8",
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "asgi-lifespan>=2.1.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
+testpaths = ["tests"]
