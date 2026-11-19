@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.config import Settings, get_settings
 from .core.logging import setup_logging
+from .middleware import RequestIdMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def create_app() -> FastAPI:
         redoc_url=f"{settings.API_PREFIX}/redoc" if settings.is_development else None,
     )
 
-    # CORS
+    # CORS (added first so it wraps all other middleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -79,16 +80,83 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # ── Health route (minimal, no auth) ─────────────────────────────────
-    @app.get("/health/live")
-    async def health_live() -> dict:
-        return {"status": "ok", "service": settings.APP_NAME}
+    # Request-ID middleware
+    app.add_middleware(RequestIdMiddleware)
 
-    @app.get("/health/ready")
-    async def health_ready() -> dict:
-        # For now, readiness is the same as liveness.
-        # Later phases will add DB/Redis checks here.
-        return {"status": "ready", "service": settings.APP_NAME}
+    # ── Health routes (no auth, no request-id logging noise) ─────────────
+
+    @app.get("/health/live", include_in_schema=False)
+    async def health_live() -> dict:
+        """Liveness probe — returns 200 as long as the process is alive.
+
+        Used by orchestrators / load-balancers to determine if the pod should
+        receive traffic.  No downstream dependency checks are performed.
+        """
+        from datetime import datetime, timezone
+
+        return {
+            "status": "ok",
+            "service": settings.APP_NAME,
+            "version": settings.APP_VERSION,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.get("/health/ready", include_in_schema=False)
+    async def health_ready(verbose: bool = False) -> dict:
+        """Readiness probe — verifies that required dependencies are available.
+
+        Returns 200 when the app is ready to handle requests. In *verbose* mode
+        includes per-dependency status; in compact mode returns a single
+        boolean.
+
+        Later phases will wire real DB and Redis checks here.
+        """
+        from datetime import datetime, timezone
+
+        checks: dict[str, dict] = {}
+
+        # --- Database --------------------------------------------------------
+        # P2 will replace the stub with a real connection check
+        try:
+            db_url = settings.DATABASE_URL
+            checks["database"] = {"status": "connected", "url": db_url.rsplit("/", 1)[0] + "/***" if db_url else None}
+        except Exception as exc:  # noqa: BLE001
+            checks["database"] = {"status": "error", "reason": str(exc)}
+
+        # --- Redis -----------------------------------------------------------
+        # P3-3 will replace the stub with a real PING
+        try:
+            redis_url = settings.REDIS_URL
+            checks["redis"] = {"status": "connected" if redis_url and not redis_url.startswith("redis://localhost") else "standalone"}
+        except Exception as exc:  # noqa: BLE001
+            checks["redis"] = {"status": "error", "reason": str(exc)}
+
+        # --- Local file system -----------------------------------------------
+        from pathlib import Path
+
+        data_dir = Path("data")
+        checks["filesystem"] = {
+            "status": "ok" if data_dir.is_dir() else "error",
+            "path": str(data_dir),
+        }
+
+        all_ok = all(v.get("status") in ("ok", "connected", "standalone") for v in checks.values())
+
+        if verbose:
+            return {
+                "status": "ready" if all_ok else "not_ready",
+                "service": settings.APP_NAME,
+                "version": settings.APP_VERSION,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "checks": checks,
+            }
+
+        return {
+            "status": "ready" if all_ok else "not_ready",
+            "service": settings.APP_NAME,
+            "checks": len(checks),
+            "ok": sum(1 for v in checks.values() if v.get("status") in ("ok", "connected", "standalone")),
+        }
 
     return app
 

@@ -42,3 +42,6 @@ build/
 
 # Backend artifacts
 data/
+
+# Implementation documentation (local review notes, not for end users)
+implementation_notes/
